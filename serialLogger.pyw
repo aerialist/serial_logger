@@ -19,18 +19,25 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-from __future__ import print_function
+# make this code Py2 and Py3 compatible
+# make sure you have "pip install future"
+from __future__ import (absolute_import, division,
+						print_function, unicode_literals)
+from builtins import (
+		 bytes, dict, int, list, object, range, str,
+		 ascii, chr, hex, input, next, oct, open,
+		 pow, round, super,
+		 filter, map, zip)
 
 import logging
-logger = logging.getLogger(__name__)
-log = logging.StreamHandler()
-log.setLevel(logging.INFO)
-logger.addHandler(log)
+logging.basicConfig(level=logging.DEBUG,
+					format='[%(levelname)s] (%(threadName)-10s) %(message)s',
+					)
 
 import os, sys, time
-import json, re
+import json
 from datetime import datetime
-from collections import OrderedDict
+
 from PyQt4 import QtCore, QtGui
 import pyqtgraph as pg
 
@@ -69,7 +76,7 @@ class SerialWorker(QtCore.QObject):
 		print("opened port")
 		while self.running:
 			#print "SerialWorker is running"
-			line = self.port.readline()
+			line = str(self.port.readline())
 			self.dataReady.emit(line)
 			if self.use_file:
 				time.sleep(0.01)
@@ -103,7 +110,7 @@ class dataObject(object):
 		self.pen = pen
 		self.ydata = np.zeros(300)
 		#self.dataplot = plotwdg.plot(self.ydata, symbol='o', symbolBrush=(255,0,0), symbolPen='w')
-		self.dataplot = plotwdg.plot(self.ydata, symbol='o')
+		self.dataplot = plotwdg.plot(self.ydata, symbol='o', symbolSize=2)
 		self.dataplot.setPen(self.pen)
 		self.name = name
 
@@ -118,9 +125,11 @@ class dataObject(object):
 
 	def hidePlot(self):
 		self.dataplot.setPen(None)
+		self.dataplot.setSymbol(None)
 
 	def showPlot(self):
 		self.dataplot.setPen(self.pen)
+		self.dataplot.setSymbol("o")
 
 	def resetData(self):
 		self.ydata = np.zeros(300)
@@ -135,8 +144,14 @@ class dataObject(object):
 		self.pen = newPen
 		self.dataplot.setPen(self.pen)
 
-
 class MainWindow(QtGui.QMainWindow, Ui_MainWindow):
+	"""
+		Serial data logger program
+		This version is good for plotting fast (up to about 100Hz)
+		sampling and saving to file. This version uses Qt's QThread
+		and Signal/Slot mechanics.
+		For more saving options with slower (<10Hz) signals, use 
+	"""
 	def __init__(self, parent=None):
 		super(MainWindow, self).__init__(parent)
 		self.setupUi(self)
@@ -166,6 +181,7 @@ class MainWindow(QtGui.QMainWindow, Ui_MainWindow):
 		self.pushButton_update.clicked.connect(self.populatePort)
 		self.pushButtonUpdateFileName.clicked.connect(self.populateFileName)
 		self.pushButton_AutoRange.clicked.connect(self.onAutoRange)
+		self.checkBox_autoscroll.toggled.connect(self.onAutoScroll)
 
 		self.populatePort()
 		self.populateFileName()
@@ -173,24 +189,38 @@ class MainWindow(QtGui.QMainWindow, Ui_MainWindow):
 		self.running = False
 		self.logfileh = None
 
-		self.dataObjects = {}
 		self.dataObject_list = []
 		dataNames = ['millis', 'a0', 'single', 'diff']
-		pens = [
-				pg.mkPen('r', width=1.0, style=QtCore.Qt.SolidLine),
-				pg.mkPen('g', width=1.0, style=QtCore.Qt.SolidLine),
-				pg.mkPen('b', width=1.0, style=QtCore.Qt.SolidLine),
-				pg.mkPen('c', width=1.0, style=QtCore.Qt.SolidLine),
-		]
-		for i, dataName in enumerate(dataNames):
-			self.dataObjects[dataName] = dataObject(dataName, self.plotwdg, pens[i])
-			self.dataObject_list.append(self.dataObjects[dataName])
-			#self.dataObjects[dataName].hidePlot()
-		#self.dataObjects['a0'].showPlot()
-		#self.dataObjects['single'].showPlot()
+		colors = [(228,26,28), (55,126,184), (77,175,74), (152,78,163),
+					(255,127,0), (255,255,51), (166,86,40), (247,129,191)]
+		for color in colors:
+			pen = pg.mkPen(color, widht=1.0, style=QtCore.Qt.SolidLine)
+			self.dataObject_list.append(dataObject("", self.plotwdg, pen))
+			
+		self.plot_ckboxes = [self.checkBox_d0, self.checkBox_d1
+						, self.checkBox_d2, self.checkBox_d3
+						, self.checkBox_d4, self.checkBox_d5
+						, self.checkBox_d6, self.checkBox_d7]
+		# TODO: hate this mess...
+		self.groupBox_liveUpdate.toggled.connect(lambda: self.clearPlot(None))
+		self.checkBox_d0.toggled.connect(lambda: self.clearPlot(0))
+		self.checkBox_d1.toggled.connect(lambda: self.clearPlot(1))
+		self.checkBox_d2.toggled.connect(lambda: self.clearPlot(2))
+		self.checkBox_d3.toggled.connect(lambda: self.clearPlot(3))
+		self.checkBox_d4.toggled.connect(lambda: self.clearPlot(4))
+		self.checkBox_d5.toggled.connect(lambda: self.clearPlot(5))
+		self.checkBox_d6.toggled.connect(lambda: self.clearPlot(6))
+		self.checkBox_d7.toggled.connect(lambda: self.clearPlot(7))
 
 	def onAutoRange(self):
 		self.plotwdg.enableAutoRange()
+
+	def onAutoScroll(self):
+		if self.raw2box:
+			if self.checkBox_autoscroll.isChecked():
+				self.raw2box.end = QtGui.QTextCursor.End
+			else:
+				self.raw2box.end = None
 
 	def populatePort(self):
 		self.comboBox.clear()
@@ -201,11 +231,10 @@ class MainWindow(QtGui.QMainWindow, Ui_MainWindow):
 		for device in serials:
 			self.comboBox.addItem(device[0])
 
-		myPortFound = self.comboBox.findText("/dev/cu.usbmodem534631")
-		if myPortFound != -1:
-			self.comboBox.setCurrentIndex(myPortFound)
-		else:
-			self.comboBox.setCurrentIndex(0)
+		# select last one as default
+		nports = self.comboBox.count()
+		if nports != 0:
+			self.comboBox.setCurrentIndex(nports-1)
 
 	def populateFileName(self):
 		now = datetime.now()
@@ -226,7 +255,7 @@ class MainWindow(QtGui.QMainWindow, Ui_MainWindow):
 			self.thread.start()
 			self.running = True
 			self.pushButton.setText("STOP")
-			if self.checkBox.isChecked():
+			if self.checkBox_csv.isChecked():
 				#TODO: except IOError. happens when log directory does not exist.
 				self.logfileh = open(str(self.lineEdit.text()), 'w')
 
@@ -248,8 +277,9 @@ class MainWindow(QtGui.QMainWindow, Ui_MainWindow):
 		Receive QString payload
 		"""
 		#convert QString payload to Python String
-		payload = unicode(payloadQs).encode('latin-1')
-		self.textBrowser.append(payload.strip())
+		#payload = unicode(payloadQs).encode('latin-1')
+		payload = payloadQs
+		self.textBrowser_log.append(payload.strip())
 		if self.logfileh:
 			self.logfileh.write(payload)
 
@@ -277,16 +307,29 @@ class MainWindow(QtGui.QMainWindow, Ui_MainWindow):
 
 		self.updatePlot(data)
 
-	def clearPlot(self, index):
-		#TODO: do something?
-		pass
-
 	def updatePlot(self, data):
 		checkBoxes = [self.checkBox_d0, self.checkBox_d1, self.checkBox_d2, self.checkBox_d3]
 		for i, item in enumerate(data):
 			if checkBoxes[i].isChecked():
 				self.dataObject_list[i].pushData(item)
 
+	def clearPlot(self, index=None):
+		if index == None:
+			if self.groupBox_liveUpdate.isChecked():
+				for i, ckbox in enumerate(self.plot_ckboxes):
+					if ckbox.isChecked():
+						self.dataObject_list[i].showPlot()
+					else:
+						self.dataObject_list[i].hidePlot()
+			else:
+				for i, ckbox in enumerate(self.plot_ckboxes):
+					self.dataObject_list[i].hidePlot()
+		else:
+			if self.plot_ckboxes[index].isChecked():
+				self.dataObject_list[index].showPlot()
+			else:
+				self.dataObject_list[index].hidePlot()
+				
 	def __del__(self):
 		# make sure serial is closed.
 		self.serialreader.stopRunning()
@@ -299,10 +342,8 @@ class MainWindow(QtGui.QMainWindow, Ui_MainWindow):
 	def closeEvent(self, event):
 		pass
 		
-def main():
+if __name__ == '__main__':
 	app = QtGui.QApplication(sys.argv)
 	form = MainWindow()
 	form.show()
 	app.exec_()
-
-main()
